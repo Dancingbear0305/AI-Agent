@@ -1,0 +1,20 @@
+services:
+  ditto-lab:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      AI_MODE: ${AI_MODE:-demo}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+    volumes:
+      - ditto-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  ditto-data:
