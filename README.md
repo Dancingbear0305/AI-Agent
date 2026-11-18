@@ -1,112 +1,106 @@
-# Ditto Agent Lab｜Linux 測試版
+# Ditto Agent Lab｜MySQL 與共同修訂測試版
 
-打開首頁就是 Agent。這是獨立原型，尚未串接正式 Ditto、既有自動更新知識庫或真實帳號。
+聊天、來源預覽、選取修訂、貼圖、完整版本歷史及查詢回饋。仍為獨立測試系統：未串接正式 Ditto、真實登入或自動更新知識庫。
 
-## 最快開始：Linux 已有 Python 3.10 以上
+## 在現有 Ubuntu 24.04 虛擬機更新
 
-不需 pip、不需模型金鑰、不需 GPU。測試機已安裝 Git 時，直接執行：
-
-```bash
-git clone https://github.com/Dancingbear0305/AI-Agent.git
-cd AI-Agent
-python3 --version
-python3 app.py
-```
-
-看到 `Ditto Lab: http://127.0.0.1:8080 | mode=demo` 後：
-
-- 在測試機本身操作瀏覽器：開啟 `http://127.0.0.1:8080`。
-- 從自己的電腦使用：保留服務執行，在自己電腦另一個終端機建立 SSH 通道：
+先停止舊程式（Ctrl+C），再於原專案目錄執行：
 
 ```bash
-ssh -N -L 18080:127.0.0.1:8080 你的Linux帳號@測試機IP
+git pull --ff-only
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-然後在**自己電腦**的瀏覽器開啟 `http://127.0.0.1:18080`。SSH 通道與伺服器都需保持開啟；Ctrl+C 可停止。若 18080 被佔用，換另一個本機連接埠。
+若尚未 clone：先執行 `git clone https://github.com/Dancingbear0305/AI-Agent.git` 再 `cd AI-Agent`。若缺少 venv，經該機管理規範允許後執行 `sudo apt install python3-venv`。不要使用 sudo pip。
 
-這個做法不需要開放額外網站連接埠。測試身分只是模擬，沒有真正登入或編輯權限限制，先用 SSH 通道測試；本版不應直接對外公開。
+### 設定本機 MySQL cindydb
 
-## 選用：用 Docker Compose 管理常駐服務
+假設已建立專用資料庫 `cindydb`、帳號 `cindy_app` 並授權；不需要更改 root 或其他人的帳號，不需要重啟 MySQL。
 
-Linux 已安裝 Docker Engine 與 Compose plugin 時，在專案目錄執行：
+第一次才複製設定（已有 .env 時不要覆蓋）：
 
 ```bash
-docker compose up -d --build
-docker compose ps
-docker compose logs -f
+cp -n .env.example .env
+chmod 600 .env
+nano .env
 ```
 
-同樣使用上述 SSH 通道與網址。停止：
+填入 `DB_PASSWORD` 的真實密碼，只留在虛擬機，不要貼到 GitHub 或聊天。預設設定如下：
+
+```dotenv
+DB_BACKEND=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=cindydb
+DB_USER=cindy_app
+DB_PASSWORD=請在虛擬機填入你的密碼
+HOST=127.0.0.1
+AI_MODE=demo
+```
+
+值可以用單引號或雙引號包住；不支援變數展開、跳脫字元或行尾註解。既有環境變數優先於 .env；環境變數如有舊值，請先移除或同步更新。如果 TCP 驗證失敗，可在直接 Python 模式設定 `DB_SOCKET=/var/run/mysqld/mysqld.sock`，沿用本機 Unix socket。
+
+確認密碼不會被 Git 追蹤：
 
 ```bash
-docker compose down
+git check-ignore -v .env
+git ls-files -- .env
 ```
 
-SQLite 存在 named volume `ditto-data`，重新建立容器或 `down` 不會刪除資料；不要使用 `down -v`，那會刪除資料。直接 Python 模式存到 `data/ditto.sqlite3`；這兩種方式的資料存放位置不同，不會自動共用。
+第二行應無輸出。程式會自動讀 .env；資料庫帳密不會送到前端。不要執行或分享會列出環境密碼的指令，例如未遮蔽的 `docker compose config`。
 
-## 功能與怎麼操作
-
-- **AI Agent**：輸入問題、查看引用來源、在回答下方分開回報正確性及滿意度。
-- **測試身分**：右上角切換小陳／小林／小王。回饋與修改均以操作當下的身分記錄。
-- **共同知識庫**：新增、修改知識。聊天回答下的來源按鈕可直接開啟該篇最新版本的編輯視窗；從聊天修改會關聯原查詢。
-- **版本紀錄**：修改須填原因；並行編輯過期版本會被拒絕，避免覆蓋他人的更新。若要還原，可把歷史內容複製到編輯框，另存新版本。
-- **查詢與回饋**：查誰問、什麼時間、原問題、回答、來源快照、prompt 版本、回饋，以及誰修改知識。
-- **問題次數**：相同問題忽略標點、空白與大小寫；近似主題依第一筆檢索來源分組，包含相同問題本身，並非語意相似度。未知問題分別記錄，不全部合併。
-- **Prompt 版本**：手動修改並保留歷史。下一次模型回答使用最新版；不會因收到回饋自動改寫 prompt。
-- **測試指南**：有 8 題可一鍵帶入的問題，更多驗收案例見 `TESTING.md`。
-
-服務重啟後資料仍保留。聊天頁的目前訊息在重新整理後清空，歷史回答可在紀錄頁查看。「新對話」不刪除歷史。對話編號用於記錄分組，當前回答為逐題檢索，不使用前文作推理。
-
-## 兩種模式
-
-### 1. demo（預設，沒有外部模型）
-
-使用關鍵字及中文字元重疊檢索，顯示完整來源原文。知識更新後直接讀取 SQLite 新內容，不需要等待向量索引。
-
-可以測試共同編輯、來源、回饋、身分、版本、紀錄；**不會依 prompt 生成或摘要**。不能以此模式評估真正模型的語意理解、回答長度或推理品質。
-
-### 2. openai（相容 Chat Completions API）
-
-適用公司允許的模型服務，或支援相同 API 的本機服務。先確認所用模型支援 `/chat/completions`。金鑰只放在伺服器端，請勿貼到聊天或前端。
-
-直接 Python 啟動時，設定環境變數；以下模型名稱與網址要換成實際服務設定：
+啟動：
 
 ```bash
-export AI_MODE=openai
-export AI_BASE_URL=https://api.openai.com/v1
-export AI_MODEL=你的模型名稱
-read -rs -p '輸入 API key: ' AI_API_KEY
-export AI_API_KEY
-python3 app.py
+python app.py
 ```
 
-本機無金鑰服務可以不設 `AI_API_KEY`。模型服務超時或回應無效時會顯示失敗，不會悄悄改成 demo；失敗請求不記為成功查詢。
+首次會在 cindydb 建立本專案資料表及虛構知識。**請使用獨立的 cindydb，不要填其他應用的資料庫；本程式使用 knowledge、queries 等通用表名。** MySQL 連線失敗會停止，不會改寫 root 或退回 SQLite。
 
-Docker 模式：複製 `.env.example` 為 `.env`，填好後執行 `docker compose up -d` 重新建立服務。`.env` 中金鑰不應提交到版本控制。本機模型在容器外時，不要使用 `localhost` 指向宿主機；需設定容器可連到的模型位址。
+### 打開網頁
 
-真實模式仍使用同一套簡單檢索；回答的來源清單代表提供給模型的參考資料，不保證模型每一句話都受來源支持，需人工驗證。自訂 prompt 的效果只在模型模式可評估。
+虛擬機本身的瀏覽器開 `http://127.0.0.1:8080`。如要允許已核准的內網測試，在 .env 設定 `HOST=0.0.0.0` 並重啟，再從 Windows 瀏覽器輸入 `http://虛擬機IP:8080`；需網路及防火牆允許，不能填 0.0.0.0 作目的網址。
 
-## 測試與維護
+本版沒有真實登入，能連到服務的人都能查詢及修改。僅供限定範圍的測試；SSH 通道可保留 HOST=127.0.0.1。
+
+## 新操作
+
+- 回答內的來源標籤：滑鼠移上或鍵盤聚焦即預覽，點擊固定。顯示的是回答當時的知識快照，包含附件。
+- 在知識正文或來源預覽選取文字：右下方出現「修改選取內容」，開啟浮框輸入替換文字，確認完整知識後保存。
+- 在 AI 回答選取：確認要更新的來源；若無法唯一對應原文，直接編輯全文預覽，不能任意把生成文字當原文替換。
+- 浮框內 Ctrl+V 貼圖或選擇檔案：PNG/JPEG/WebP，每張原始檔不超過 2 MB、1600 萬像素；每次最多 4 張新圖，每篇最多 12 張。伺服器重新編碼後存進 MySQL（或 SQLite），隨知識版本關聯保存。圖片是附件，不會自動 OCR，也不會送模型解讀。
+- 修改後顯示當前正文，下方列出日期、修改差異與修改人標籤，展開可看修改前後全文、原因及該版本圖片。
+- 舊版內容修訂若已過期，會拒絕保存；重新開啟知識庫最新版本後再修改，不自動覆寫他人的修改。
+- 「總查詢／回饋／知識修訂」三個數字卡片可點擊，切換相應紀錄；已移除提問人數。知識修訂不含系統初始資料，新建知識計為一筆。
+- 回饋「太冗長」只記錄，不會偷偷改 prompt。模型模式提供「重新精簡回答」，以原問題及原來源重新產生一則精簡版，原回答仍保留，紀錄顯示關聯。
+
+## 模型設定
+
+demo 不需 key，顯示檢索原文，不會摘要。MySQL 與 AI 是兩個獨立設定。
+
+如要真正生成回答，在 .env 設定 `AI_MODE=openai`、`AI_BASE_URL`（以 /v1 結尾）、`AI_MODEL` 及 `AI_API_KEY`，重啟。適用相容 Chat Completions 的公司核准服務或本機模型。key 不會提交或送到前端。
+
+簡單關鍵字檢索不是語意搜尋；對話為逐題查詢，沒有前文推理。模型來源需人工核實，修改 prompt 為手動版本管理，回饋不是模型訓練。
+
+## 舊資料與備份
+
+既有 SQLite `data/ditto.sqlite3` 不會被刪除；換 MySQL **不會自動搬移舊資料**，MySQL 初次使用獨立測試資料。若要沿用 SQLite，在 .env 設 `DB_BACKEND=sqlite`。正式資料搬移應另行核對與備份。
+
+MySQL 的文字、圖片、查詢與版本都在資料庫，請交由該機既有備份流程備份 cindydb；備份不要放 Git。`.gitignore` 已排除 .env、venv、資料目錄、SQL 備份、常見金鑰及日誌，但仍需檢查實際提交內容。
+
+## Docker（Linux 選用）
+
+也可以用 `docker compose up -d --build`。本版改為 **host network**，讓容器連到虛擬機本機 MySQL，因此僅適用 Linux，不需對外開放 3306。Compose 讀 .env 並傳入設定。HOST 決定網頁監聽範圍；Docker 使用 TCP DB_HOST/DB_PORT，不使用 DB_SOCKET。
+
+原本 Docker SQLite named volume 仍保留；`docker compose down` 不刪資料，勿用 `down -v`。SQLite 直接 Python 與 Docker 的資料目錄不同。
+
+## 驗證
 
 ```bash
-python3 -m unittest -v
-node --check static/app.js
+source .venv/bin/activate
+python -m unittest -v
 ```
 
-第一個指令只需 Python；第二個為選用的 JavaScript 語法檢查，需要 Node.js。備份直接 Python 模式的資料時，先停止服務，再複製整個 `data/` 目錄。可用 `DATA_DIR` 指定資料目錄，`PORT` 更改預設 8080。
-
-## 後續接正式 Ditto
-
-目前以手動新增／修改模擬知識更新。正式串接還需確認 Ditto 程式框架、帳號權限、知識庫格式與自動更新事件；再接入登入、資料同步／刪除與衝突規則，以及適合的語意檢索。Linux 部署只是執行方式，沒有自動完成這些串接。
-
-## 專案結構
-
-```text
-app.py             HTTP API、SQLite、檢索、模型介接
-static/            聊天與管理介面，無第三方 CDN
-Dockerfile         Python 容器，非 root 執行
-compose.yaml       本機綁定、持久化資料、健康檢查
-.env.example       選用模型設定
-TESTING.md         測試問題與驗收流程
-test_app.py        13 項自動測試
-```
+測試預設使用暫存 SQLite，不讀寫 MySQL 資料（測試檔會強制隔離）；詳細手動案例見 TESTING.md。JavaScript 語法可用 `node --check static/app.js` 檢查。

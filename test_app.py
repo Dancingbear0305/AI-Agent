@@ -1,4 +1,6 @@
 import concurrent.futures, json, os, tempfile, threading, unittest, urllib.request, urllib.error
+import base64, io
+from PIL import Image
 from pathlib import Path
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
@@ -7,7 +9,16 @@ import app
 class LabTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.previous=app.DB; app.DB=Path(self.tmp.name)/'test.sqlite3'
-        self.env=patch.dict(os.environ,{'AI_MODE':'demo'});self.env.start(); app.init()
+        mysql_test=os.environ.get('MYSQL_TEST')=='1'
+        if mysql_test and not os.environ.get('DB_NAME','').endswith('_qa'): raise RuntimeError('MySQL destructive tests require a dedicated *_qa database')
+        self.env=patch.dict(os.environ,{'AI_MODE':'demo','DB_BACKEND':'mysql' if mysql_test else 'sqlite'});self.env.start()
+        if os.environ.get('MYSQL_TEST')=='1':
+            with app.connect() as c:
+                c.execute('SET FOREIGN_KEY_CHECKS=0')
+                for table in ['answer_rewrites','knowledge_media','images','feedback','revisions','queries','prompts','knowledge','lab_lock']:
+                    c.execute('DROP TABLE IF EXISTS '+table)
+                c.execute('SET FOREIGN_KEY_CHECKS=1')
+        app.init()
     def tearDown(self):
         self.env.stop(); app.DB=self.previous; self.tmp.cleanup()
     def ask(self,q='一般維護要提前多久申請？',who='小陳'):
@@ -78,6 +89,12 @@ class LabTests(unittest.TestCase):
             with urllib.request.urlopen(base) as r:self.assertIn('Ditto',r.read().decode());self.assertIn("script-src 'self'",r.headers['Content-Security-Policy'])
             req=urllib.request.Request(base+'/api/ask',json.dumps({'actor':'小陳','question':'維護申請','conversation':'http'}).encode(),{'Content-Type':'application/json'})
             with urllib.request.urlopen(req) as r:self.assertTrue(json.load(r)['sources'])
+            d=app.get_api('/api/state',{})['knowledge'][0]
+            self.edit(d,new_images=[self.png()])
+            image_id=app.get_api('/api/state',{})['knowledge'][0]['images'][0]
+            with urllib.request.urlopen(base+'/media/'+image_id) as r:
+                self.assertEqual(r.headers['Content-Type'],'image/png');self.assertTrue(r.read().startswith(b'\x89PNG'))
+            with urllib.request.urlopen(base+'/app.js') as r:self.assertIn('sourcePreview',r.read().decode())
             req.add_header('Origin','http://evil.example')
             with self.assertRaises(urllib.error.HTTPError) as e:urllib.request.urlopen(req)
             self.assertEqual(e.exception.code,403)
@@ -85,5 +102,38 @@ class LabTests(unittest.TestCase):
         finally:server.shutdown();server.server_close();thread.join()
     def test_persistence_on_init(self):
         self.ask(); app.init(); self.assertEqual(len(app.get_api('/api/records',{})['queries']),1)
+
+    def png(self):
+        data=io.BytesIO();Image.new('RGB',(2,2),'red').save(data,format='PNG');return base64.b64encode(data.getvalue()).decode()
+    def test_media_revision_and_diff(self):
+        q=self.ask();d=q['sources'][0]
+        self.edit(d,content=d['content'].replace('3 個','4 個'),new_images=[self.png()],query_id=q['id'])
+        state=app.get_api('/api/state',{});updated=state['knowledge'][0]
+        self.assertEqual(len(updated['images']),1)
+        change=next(r for r in state['revisions'] if r['knowledge_id']==d['id'] and r['version']==2)
+        self.assertEqual(change['changes'],[{'before':'3','after':'4'}]);self.assertFalse(change['initial'])
+        self.assertIn('3 個',change['before_content']);self.assertEqual(change['actor'],'小林')
+        self.edit(updated,content=updated['content']+'補充')
+        self.assertEqual(app.get_api('/api/state',{})['knowledge'][0]['images'],updated['images'])
+        self.assertFalse(q['sources'][0]['images'])
+    def test_reject_bad_media_and_foreign_attachment(self):
+        d=app.get_api('/api/state',{})['knowledge'][0]
+        for image in ['invalid',base64.b64encode(b'<svg></svg>').decode()]:
+            with self.assertRaises(app.Problem):self.edit(d,new_images=[image])
+        with self.assertRaises(app.Problem):self.edit(d,images=['a'*32],content='不可保存')
+        self.assertEqual(app.get_api('/api/state',{})['knowledge'][0]['version'],1)
+    def test_concise_requires_model_and_preserves_original(self):
+        q=self.ask()
+        with self.assertRaises(app.Problem):app.post_api('/api/ask',{'actor':'小王','concise_of':q['id']})
+        with patch.dict(os.environ,{'AI_MODE':'openai'}),patch.object(app,'model_answer',return_value='精簡回答') as model:
+            out=app.post_api('/api/ask',{'actor':'小王','concise_of':q['id']})
+        self.assertEqual(out['sources'],q['sources']);self.assertIn('最多三個要點',model.call_args.args[2])
+        records=app.get_api('/api/records',{});self.assertEqual(records['rewrites'][0]['original_id'],q['id'])
+        self.assertEqual(records['queries'][-1]['answer'],q['answer'])
+    def test_dotenv_keeps_environment_precedence(self):
+        from database import load_env
+        p=Path(self.tmp.name)/'.env';p.write_text('LAB_ENV_TEST="local value"\nLAB_ENV_OVERRIDE=file\n')
+        with patch.dict(os.environ,{'LAB_ENV_OVERRIDE':'environment'}):
+            load_env(p);self.assertEqual(os.environ['LAB_ENV_TEST'],'local value');self.assertEqual(os.environ['LAB_ENV_OVERRIDE'],'environment')
 
 if __name__=='__main__':unittest.main(verbosity=2)
